@@ -1,0 +1,497 @@
+// Author: David
+
+// Source: פרקטיקוד1\Program.cs
+using System.CommandLine;
+using System.Text;
+var rootCommand = new RootCommand("fib - כלי לאריזת קובצי קוד");
+var bundleCommand = new Command("bundle", "אריזת קובצי קוד לקובץ אחד");
+var languageOption = new Option<string[]>("--language", "-l")
+{
+    Description = "שפות הקוד לכלילה, או all לכל השפות הנתמכות",
+    Required = true,
+    AllowMultipleArgumentsPerToken = true
+};
+var outputOption = new Option<string>("--output", "-o")
+{
+    Description = "שם או נתיב קובץ הפלט",
+    Required = true
+};
+var noteOption = new Option<bool>("--note", "-n")
+{
+    Description = "הוספת הערה עם מקור כל קובץ"
+};
+var sortOption = new Option<string>("--sort", "-s")
+{
+    Description = "סדר הקבצים: name או type",
+    DefaultValueFactory = _ => "name"
+};
+var removeEmptyLinesOption =
+    new Option<bool>("--remove-empty-lines", "-r")
+    {
+        Description = "הסרת שורות ריקות"
+    };
+var authorOption = new Option<string?>("--author", "-a")
+{
+    Description = "שם יוצר/ת ה-bundle"
+};
+bundleCommand.Options.Add(languageOption);
+bundleCommand.Options.Add(outputOption);
+bundleCommand.Options.Add(noteOption);
+bundleCommand.Options.Add(sortOption);
+bundleCommand.Options.Add(removeEmptyLinesOption);
+bundleCommand.Options.Add(authorOption);
+bundleCommand.SetAction(parseResult =>
+{
+    var languages = parseResult.GetValue(languageOption) ?? Array.Empty<string>();
+    var output = parseResult.GetValue(outputOption);
+    var note = parseResult.GetValue(noteOption);
+    var sort = parseResult.GetValue(sortOption) ?? "name";
+    var removeEmpty = parseResult.GetValue(removeEmptyLinesOption);
+    var author = parseResult.GetValue(authorOption);
+    return Bundle(languages, output, note, sort, removeEmpty, author) ? 0 : 1;
+});
+var createRspCommand = new Command(
+    "create-rsp",
+    "יצירת קובץ תגובה והפעלת האריזה");
+createRspCommand.SetAction(_ =>
+{
+    return CreateRspAndRun(bundleCommand) ? 0 : 1;
+});
+rootCommand.Subcommands.Add(bundleCommand);
+rootCommand.Subcommands.Add(createRspCommand);
+return rootCommand.Parse(args).Invoke();
+// ======================================================
+// הגדרות שפות ואריזת קבצים
+// ======================================================
+static bool Bundle(
+    string[] requestedLanguages,
+    string outputPath,
+    bool includeNotes,
+    string sort,
+    bool removeEmptyLines,
+    string? author)
+{
+    var supportedExtensions = new Dictionary<string, string[]>(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        ["cs"] = new[] { ".cs" },
+        ["csharp"] = new[] { ".cs" },
+        ["py"] = new[] { ".py" },
+        ["python"] = new[] { ".py" },
+        ["js"] = new[] { ".js", ".jsx" },
+        ["javascript"] = new[] { ".js", ".jsx" },
+        ["ts"] = new[] { ".ts", ".tsx" },
+        ["typescript"] = new[] { ".ts", ".tsx" },
+        ["java"] = new[] { ".java" },
+        ["c"] = new[] { ".c", ".h" },
+        ["cpp"] = new[] { ".cpp", ".hpp", ".cc", ".hh" },
+        ["html"] = new[] { ".html", ".htm" },
+        ["css"] = new[] { ".css" },
+        ["sql"] = new[] { ".sql" },
+        ["json"] = new[] { ".json" },
+        ["xml"] = new[] { ".xml" },
+        ["go"] = new[] { ".go" },
+        ["rust"] = new[] { ".rs" },
+        ["php"] = new[] { ".php" },
+        ["ruby"] = new[] { ".rb" }
+    };
+    if (requestedLanguages.Length == 0)
+    {
+        Console.Error.WriteLine(
+            "שגיאה: יש לציין לפחות שפה אחת באמצעות --language.");
+        return false;
+    }
+    var languages = requestedLanguages
+        .SelectMany(x => x.Split(
+            ',',
+            StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries))
+        .Select(x => x.ToLowerInvariant())
+        .ToArray();
+    if (languages.Contains("all") && languages.Length > 1)
+    {
+        Console.Error.WriteLine(
+            "שגיאה: אין לשלב all עם שמות שפות נוספים.");
+        return false;
+    }
+    var unknownLanguages = languages
+        .Where(x => x != "all" && !supportedExtensions.ContainsKey(x))
+        .Distinct()
+        .ToArray();
+    if (unknownLanguages.Length > 0)
+    {
+        Console.Error.WriteLine(
+            $"שגיאה: שפה לא נתמכת: {string.Join(", ", unknownLanguages)}.");
+        Console.Error.WriteLine(
+            $"שפות נתמכות: {string.Join(", ", supportedExtensions.Keys.Distinct().OrderBy(x => x))}, all.");
+        return false;
+    }
+    if (!sort.Equals("name", StringComparison.OrdinalIgnoreCase) &&
+        !sort.Equals("type", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine(
+            "שגיאה: ערך sort חייב להיות name או type.");
+        return false;
+    }
+    if (string.IsNullOrWhiteSpace(outputPath))
+    {
+        Console.Error.WriteLine("שגיאה: יש לציין נתיב פלט.");
+        return false;
+    }
+    try
+    {
+        var currentDirectory = Directory.GetCurrentDirectory();
+        var fullOutputPath = Path.GetFullPath(outputPath, currentDirectory);
+        var outputDirectory = Path.GetDirectoryName(fullOutputPath);
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            Console.Error.WriteLine("שגיאה: לא ניתן לזהות את תיקיית היעד.");
+            return false;
+        }
+        Directory.CreateDirectory(outputDirectory);
+        var ignoredDirectories = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase)
+        {
+            "bin",
+            "obj",
+            "debug",
+            "release",
+            ".git",
+            ".vs",
+            ".idea",
+            ".vscode",
+            "node_modules",
+            "publish"
+        };
+        var selectedExtensions = languages.Contains("all")
+            ? supportedExtensions.Values
+                .SelectMany(x => x)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : languages
+                .SelectMany(x => supportedExtensions[x])
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var files = Directory
+            .EnumerateFiles(
+                currentDirectory,
+                "*",
+                SearchOption.AllDirectories)
+            .Where(file =>
+            {
+                var fullPath = Path.GetFullPath(file);
+                // לא כוללים את קובץ הפלט בתוך עצמו.
+                if (string.Equals(
+                    fullPath,
+                    fullOutputPath,
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                var relativePath = Path.GetRelativePath(
+                    currentDirectory,
+                    fullPath);
+                var parts = relativePath.Split(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar);
+                // התעלמות מתיקיות שאינן חלק מהקוד להגשה.
+                if (parts.Any(part => ignoredDirectories.Contains(part)))
+                    return false;
+                return selectedExtensions.Contains(Path.GetExtension(file));
+            });
+        if (sort.Equals("type", StringComparison.OrdinalIgnoreCase))
+        {
+            files = files
+                .OrderBy(Path.GetExtension, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            files = files
+                .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(
+                    file => Path.GetRelativePath(currentDirectory, file),
+                    StringComparer.OrdinalIgnoreCase);
+        }
+        var fileList = files.ToList();
+        using var writer = new StreamWriter(
+            fullOutputPath,
+            false,
+            new UTF8Encoding(false));
+        if (!string.IsNullOrWhiteSpace(author))
+        {
+            writer.WriteLine($"// Author: {author.Trim()}");
+            writer.WriteLine();
+        }
+        foreach (var file in fileList)
+        {
+            if (includeNotes)
+            {
+                var relativePath = Path.GetRelativePath(
+                    currentDirectory,
+                    file);
+                writer.WriteLine($"// Source: {relativePath}");
+            }
+            var lines = File.ReadAllLines(file);
+            foreach (var line in lines)
+            {
+                if (removeEmptyLines && string.IsNullOrWhiteSpace(line))
+                    continue;
+                writer.WriteLine(line);
+            }
+            writer.WriteLine();
+        }
+        Console.WriteLine(
+            $"האריזה הסתיימה בהצלחה. מספר הקבצים: {fileList.Count}");
+        Console.WriteLine($"קובץ הפלט: {fullOutputPath}");
+        return true;
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        Console.Error.WriteLine(
+            $"שגיאת הרשאות: אין הרשאה לקרוא או לכתוב קובץ. {ex.Message}");
+        return false;
+    }
+    catch (DirectoryNotFoundException ex)
+    {
+        Console.Error.WriteLine($"שגיאה: התיקייה לא נמצאה. {ex.Message}");
+        return false;
+    }
+    catch (IOException ex)
+    {
+        Console.Error.WriteLine($"שגיאת קלט/פלט: {ex.Message}");
+        return false;
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"שגיאה בנתיב או בשם קובץ: {ex.Message}");
+        return false;
+    }
+    catch (NotSupportedException ex)
+    {
+        Console.Error.WriteLine($"הנתיב אינו נתמך: {ex.Message}");
+        return false;
+    }
+}
+// ======================================================
+// create-rsp: קליטת אפשרויות, יצירת קובץ והפעלת האריזה
+// ======================================================
+static bool CreateRspAndRun(Command bundleCommand)
+{
+    Console.WriteLine("יצירת קובץ תגובה לאריזת קוד.");
+    Console.WriteLine("אם ערך אינו תקין, תתבקשי להזין שוב רק את אותו ערך.");
+    Console.WriteLine();
+    var languages = AskLanguages();
+    var output = AskNonEmpty("שם או נתיב קובץ הפלט: ");
+    var includeNotes = AskYesNo("להוסיף הערה עם מקור כל קובץ? (y/n): ");
+    var sort = AskSort();
+    var removeEmptyLines = AskYesNo("להסיר שורות ריקות? (y/n): ");
+    var author = AskOptional("שם היוצר/ת (אפשר להשאיר ריק): ");
+    var rspPath = AskRspPath();
+    var arguments = new List<string>
+    {
+        "--language"
+    };
+    arguments.AddRange(languages);
+    arguments.Add("--output");
+    arguments.Add(output);
+    if (includeNotes)
+        arguments.Add("--note");
+    arguments.Add("--sort");
+    arguments.Add(sort);
+    if (removeEmptyLines)
+        arguments.Add("--remove-empty-lines");
+    if (!string.IsNullOrWhiteSpace(author))
+    {
+        arguments.Add("--author");
+        arguments.Add(author);
+    }
+    try
+    {
+        // קובץ התגובה צריך לכלול גם את שם פקודת המשנה.
+        var responseTokens = new List<string> { "bundle" };
+        responseTokens.AddRange(arguments);
+        var responseContent = string.Join(
+            Environment.NewLine,
+            responseTokens.Select(QuoteArgument));
+        File.WriteAllText(
+            rspPath,
+            responseContent + Environment.NewLine,
+            new UTF8Encoding(false));
+        Console.WriteLine(
+            $"קובץ התגובה נוצר: {Path.GetFullPath(rspPath)}");
+        // הפעלת הפקודה באמצעות הארגומנטים שנקלטו.
+        var parseResult = bundleCommand.Parse(arguments.ToArray());
+        var exitCode = parseResult.Invoke();
+        if (exitCode == 0)
+        {
+            File.Delete(rspPath);
+            Console.WriteLine("האריזה הצליחה. קובץ התגובה הזמני נמחק.");
+            return true;
+        }
+        Console.Error.WriteLine("האריזה נכשלה.");
+        Console.Error.WriteLine(
+            $"קובץ התגובה נשמר לצורך בדיקה והרצה חוזרת: {Path.GetFullPath(rspPath)}");
+        return false;
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        Console.Error.WriteLine(
+            $"אין הרשאה ליצור או למחוק את קובץ התגובה: {ex.Message}");
+        return false;
+    }
+    catch (IOException ex)
+    {
+        Console.Error.WriteLine(
+            $"שגיאה בעבודה עם קובץ התגובה: {ex.Message}");
+        return false;
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"שם או נתיב לא תקין: {ex.Message}");
+        return false;
+    }
+}
+// ======================================================
+// פונקציות עזר לקליטת נתונים עם ניסיון חוזר
+// ======================================================
+static string[] AskLanguages()
+{
+    var supported = new HashSet<string>(
+        StringComparer.OrdinalIgnoreCase)
+    {
+        "cs", "csharp",
+        "py", "python",
+        "js", "javascript",
+        "ts", "typescript",
+        "java", "c", "cpp",
+        "html", "css", "sql", "json", "xml",
+        "go", "rust", "php", "ruby",
+        "all"
+    };
+    while (true)
+    {
+        Console.Write(
+            "שפות קוד (למשל cs או py js; אפשר גם all): ");
+        var input = Console.ReadLine() ?? "";
+        var values = input
+            .Split(
+                new[] { ' ', ',', ';' },
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries)
+            .Select(x => x.ToLowerInvariant())
+            .ToArray();
+        if (values.Length == 0)
+        {
+            Console.WriteLine(
+                "לא הוזנה שפה. הזיני לפחות שפה אחת.");
+            continue;
+        }
+        if (values.Contains("all") && values.Length > 1)
+        {
+            Console.WriteLine(
+                "אין לשלב all עם שפות נוספות. הזיני all לבדו או בחרי שפות.");
+            continue;
+        }
+        var invalid = values
+            .Where(x => !supported.Contains(x))
+            .Distinct()
+            .ToArray();
+        if (invalid.Length > 0)
+        {
+            Console.WriteLine(
+                $"שפה לא מוכרת: {string.Join(", ", invalid)}. נסי שוב.");
+            continue;
+        }
+        return values;
+    }
+}
+static string AskNonEmpty(string prompt)
+{
+    while (true)
+    {
+        Console.Write(prompt);
+        var value = Console.ReadLine()?.Trim() ?? "";
+        if (!string.IsNullOrWhiteSpace(value))
+            return value;
+        Console.WriteLine(
+            "הערך אינו יכול להיות ריק. נסי שוב.");
+    }
+}
+static string AskOptional(string prompt)
+{
+    Console.Write(prompt);
+    return Console.ReadLine()?.Trim() ?? "";
+}
+static bool AskYesNo(string prompt)
+{
+    while (true)
+    {
+        Console.Write(prompt);
+        var value = (Console.ReadLine() ?? "")
+            .Trim()
+            .ToLowerInvariant();
+        if (value is "y" or "yes" or "כן")
+            return true;
+        if (value is "n" or "no" or "לא")
+            return false;
+        Console.WriteLine(
+            "תשובה לא תקינה. הזיני y או n, או כן או לא.");
+    }
+}
+static string AskSort()
+{
+    while (true)
+    {
+        Console.Write(
+            "סדר הקבצים (name/type, ברירת מחדל name): ");
+        var value = (Console.ReadLine() ?? "").Trim();
+        if (value.Length == 0)
+            return "name";
+        if (value.Equals("name", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("type", StringComparison.OrdinalIgnoreCase))
+        {
+            return value.ToLowerInvariant();
+        }
+        Console.WriteLine(
+            "ערך לא תקין. יש להזין name או type. נסי שוב.");
+    }
+}
+static string AskRspPath()
+{
+    while (true)
+    {
+        Console.Write(
+            "שם קובץ התגובה (ברירת מחדל bundle.rsp): ");
+        var value = (Console.ReadLine() ?? "").Trim();
+        if (value.Length == 0)
+            value = "bundle.rsp";
+        if (!Path.HasExtension(value))
+            value += ".rsp";
+        try
+        {
+            var fullPath = Path.GetFullPath(value);
+            if (Directory.Exists(fullPath))
+            {
+                Console.WriteLine(
+                    "הנתיב מצביע על תיקייה ולא על קובץ. נסי שוב.");
+                continue;
+            }
+            return value;
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or
+            NotSupportedException or
+            PathTooLongException)
+        {
+            Console.WriteLine(
+                $"שם או נתיב לא תקין: {ex.Message}. נסי שוב.");
+        }
+    }
+}
+static string QuoteArgument(string argument)
+{
+    // שמירת רווחים בתוך ארגומנט יחיד בקובץ התגובה.
+    return "\"" +
+           argument.Replace("\\", "\\\\").Replace("\"", "\\\"") +
+           "\"";
+}
+
